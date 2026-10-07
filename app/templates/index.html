@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IoT Operator</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>IoT Operator</h1>
+      <p>Custodiante, executor de contratos e mediador do TpM+.</p>
+    </div>
+    <button id="logout" class="hidden" type="button">Sair</button>
+  </header>
+  <main>
+    <section id="login-card" class="card">
+      <h2>Entrar</h2>
+      <p>Demonstração: ana/ana123, bruno/bruno123 ou carla/carla123. SLA e mediação executiva usam a conta admin.</p>
+      <form id="login-form">
+        <label for="username">Usuário</label>
+        <input id="username" name="username" autocomplete="username" value="carla" required>
+        <label for="password">Senha</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" value="carla123" required>
+        <div class="actions"><button type="submit">Entrar</button></div>
+      </form>
+      <p id="login-error" class="note"></p>
+    </section>
+
+    <section id="app" class="hidden">
+      <div class="card span-2">
+        <div id="status" class="meta"></div>
+      </div>
+      <div class="grid">
+        <section class="card">
+          <h2>Buscar equipamento</h2>
+          <form id="search-form" class="row">
+            <input id="search" placeholder="Nome ou identificador" aria-label="Buscar equipamento">
+            <button type="submit">Buscar</button>
+          </form>
+          <table>
+            <thead><tr><th>Equipamento</th><th>Sala</th><th>Custódia</th><th>Estado</th></tr></thead>
+            <tbody id="equipment-body"></tbody>
+          </table>
+        </section>
+
+        <section class="card">
+          <h2>Registrar custódia</h2>
+          <form id="custody-form">
+            <label for="equipment">Equipamento</label>
+            <select id="equipment" required></select>
+            <label for="room">Sala</label>
+            <select id="room" required></select>
+            <div class="actions">
+              <button type="submit">Assumir</button>
+              <button type="button" id="return-btn">Devolver</button>
+            </div>
+          </form>
+          <p id="custody-msg" class="note"></p>
+        </section>
+
+        <section class="card span-2">
+          <h2>SLA e smart contract</h2>
+          <p class="note">A porta <strong id="sla-port">8090</strong> do container aceita <code>POST /sla</code>. O formulário abaixo envia o mesmo fluxo pela API do operador. Com credencial AWS, o texto passa pelo Amazon Bedrock; sem credencial, o interpretador local gera o contrato e marca a origem.</p>
+          <form id="sla-form">
+            <label for="sla-title">Título</label>
+            <input id="sla-title" value="SLA de custódia dos equipamentos de teste">
+            <label for="sla-document">Texto do SLA</label>
+            <textarea id="sla-document">Entre a equipe operacional e a diretoria. O equipamento 84:66:39:91 não pode permanecer mais de 24 horas com o mesmo usuário. Disponibilidade mínima de 99.5%. Latência máxima de 200 ms. Penalidade: alertar o nível executivo.</textarea>
+            <div class="actions"><button type="submit">Interpretar e implantar</button></div>
+          </form>
+          <pre id="sla-result" class="hidden"></pre>
+        </section>
+
+        <section class="card">
+          <h2>Contratos</h2>
+          <div id="contracts"></div>
+        </section>
+
+        <section class="card">
+          <h2>Mediação</h2>
+          <form id="dispute-form">
+            <label for="dispute-contract">Contrato</label>
+            <select id="dispute-contract" required></select>
+            <label for="claimant">Nível</label>
+            <select id="claimant">
+              <option value="operational">operational</option>
+              <option value="executive">executive</option>
+            </select>
+            <label for="statement">Pleito</label>
+            <textarea id="statement">O equipamento permaneceu com o operador além do limite combinado no contrato.</textarea>
+            <div class="actions"><button type="submit">Mediar com o livro-razão</button></div>
+          </form>
+          <pre id="dispute-result" class="hidden"></pre>
+        </section>
+
+        <section class="card span-2">
+          <h2>Cadeia</h2>
+          <table>
+            <thead><tr><th>Bloco</th><th>Ação</th><th>Resumo</th><th>Consenso</th></tr></thead>
+            <tbody id="chain-body"></tbody>
+          </table>
+        </section>
+      </div>
+    </section>
+  </main>
+  <script>
+    const state = { token: sessionStorage.getItem("iot_token") || "" };
+
+    const loginCard = document.querySelector("#login-card");
+    const app = document.querySelector("#app");
+    const logout = document.querySelector("#logout");
+
+    function headers() {
+      return { Authorization: "Bearer " + state.token, "Content-Type": "application/json" };
+    }
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        ...options,
+        headers: { ...headers(), ...(options.headers || {}) }
+      });
+      const body = await response.json().catch(() => ({}));
+      if (response.status === 401) {
+        sessionStorage.removeItem("iot_token");
+        state.token = "";
+        showLogin();
+      }
+      if (!response.ok) {
+        throw new Error(body.error || "falha na API");
+      }
+      return body;
+    }
+
+    function showLogin() {
+      loginCard.classList.remove("hidden");
+      app.classList.add("hidden");
+      logout.classList.add("hidden");
+    }
+
+    function showApp() {
+      loginCard.classList.add("hidden");
+      app.classList.remove("hidden");
+      logout.classList.remove("hidden");
+    }
+
+    function badge(status) {
+      const span = document.createElement("span");
+      span.className = "badge" + (status === "violated" ? " warn" : status === "available" ? " ok" : "");
+      span.textContent = status;
+      return span;
+    }
+
+    function addEquipmentRow(body, item) {
+      const row = document.createElement("tr");
+      const name = document.createElement("td");
+      name.textContent = item.name;
+      const code = document.createElement("div");
+      const codeEl = document.createElement("code");
+      codeEl.textContent = item.id;
+      code.appendChild(codeEl);
+      name.appendChild(code);
+      const room = document.createElement("td");
+      room.textContent = item.room ? item.room.name : "—";
+      const holder = document.createElement("td");
+      const who = item.holder ? item.holder.name : "—";
+      holder.textContent = item.usage_hours == null ? who : `${who} · ${item.usage_hours} h`;
+      const stateCell = document.createElement("td");
+      stateCell.appendChild(badge(item.status));
+      row.append(name, room, holder, stateCell);
+      body.appendChild(row);
+    }
+
+    async function refresh() {
+      const status = await api("/api/status");
+      document.querySelector("#status").textContent =
+        `Cadeia ${status.chain_height} blocos · ${status.custody_events} custódias · ${status.violations} violações · líder ${status.consensus.leader} · Bedrock ${status.bedrock_mode}`;
+      document.querySelector("#sla-port").textContent = status.sla_port;
+
+      const roomSelect = document.querySelector("#room");
+      roomSelect.innerHTML = "";
+      for (const room of status.rooms) {
+        const option = document.createElement("option");
+        option.value = room.id;
+        option.textContent = room.name;
+        roomSelect.appendChild(option);
+      }
+
+      const equipment = await api("/api/equipment");
+      const body = document.querySelector("#equipment-body");
+      const equipmentSelect = document.querySelector("#equipment");
+      body.replaceChildren();
+      equipmentSelect.replaceChildren();
+      for (const item of equipment.items) {
+        addEquipmentRow(body, item);
+        const option = document.createElement("option");
+        option.value = item.id;
+        option.textContent = `${item.name} (${item.id})`;
+        equipmentSelect.appendChild(option);
+      }
+
+      const contracts = await api("/api/contracts");
+      const contractBox = document.querySelector("#contracts");
+      const disputeSelect = document.querySelector("#dispute-contract");
+      contractBox.replaceChildren();
+      disputeSelect.replaceChildren();
+      for (const contract of contracts.items) {
+        const block = document.createElement("p");
+        const title = document.createElement("strong");
+        title.textContent = contract.title;
+        block.appendChild(title);
+        block.appendChild(document.createElement("br"));
+        block.appendChild(badge(contract.status));
+        const count = document.createElement("span");
+        count.textContent = ` violações: ${contract.violation_count}`;
+        block.appendChild(count);
+        contractBox.appendChild(block);
+        const option = document.createElement("option");
+        option.value = contract.id;
+        option.textContent = contract.title;
+        disputeSelect.appendChild(option);
+      }
+
+      const chain = await api("/api/chain?limit=12");
+      const chainBody = document.querySelector("#chain-body");
+      chainBody.replaceChildren();
+      for (const event of chain.items) {
+        const row = document.createElement("tr");
+        for (const value of [String(event.block_index), event.action, event.summary, `${event.leader} · ${event.layer}`]) {
+          const cell = document.createElement("td");
+          cell.textContent = value;
+          row.appendChild(cell);
+        }
+        chainBody.appendChild(row);
+      }
+    }
+
+    document.querySelector("#login-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const error = document.querySelector("#login-error");
+      error.textContent = "";
+      try {
+        const response = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: document.querySelector("#username").value,
+            password: document.querySelector("#password").value
+          })
+        });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || "falha no login");
+        state.token = body.token;
+        sessionStorage.setItem("iot_token", body.token);
+        showApp();
+        await refresh();
+      } catch (err) {
+        error.textContent = err.message;
+      }
+    });
+
+    logout.addEventListener("click", () => {
+      sessionStorage.removeItem("iot_token");
+      state.token = "";
+      showLogin();
+    });
+
+    document.querySelector("#search-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const query = document.querySelector("#search").value;
+      const equipment = await api("/api/equipment?q=" + encodeURIComponent(query));
+      const body = document.querySelector("#equipment-body");
+      body.replaceChildren();
+      for (const item of equipment.items) addEquipmentRow(body, item);
+    });
+
+    document.querySelector("#custody-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const message = document.querySelector("#custody-msg");
+      try {
+        await api("/api/custody", {
+          method: "POST",
+          body: JSON.stringify({
+            equipment_id: document.querySelector("#equipment").value,
+            room_id: document.querySelector("#room").value
+          })
+        });
+        message.textContent = "Custódia registrada na cadeia.";
+        await refresh();
+      } catch (err) {
+        message.textContent = err.message;
+      }
+    });
+
+    document.querySelector("#return-btn").addEventListener("click", async () => {
+      const message = document.querySelector("#custody-msg");
+      try {
+        await api("/api/custody/return", {
+          method: "POST",
+          body: JSON.stringify({ equipment_id: document.querySelector("#equipment").value })
+        });
+        message.textContent = "Devolução registrada.";
+        await refresh();
+      } catch (err) {
+        message.textContent = err.message;
+      }
+    });
+
+    document.querySelector("#sla-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const result = document.querySelector("#sla-result");
+      try {
+        const body = await api("/api/sla", {
+          method: "POST",
+          body: JSON.stringify({
+            title: document.querySelector("#sla-title").value,
+            document: document.querySelector("#sla-document").value
+          })
+        });
+        result.classList.remove("hidden");
+        result.textContent = JSON.stringify(body, null, 2);
+        await refresh();
+      } catch (err) {
+        result.classList.remove("hidden");
+        result.textContent = err.message;
+      }
+    });
+
+    document.querySelector("#dispute-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const result = document.querySelector("#dispute-result");
+      try {
+        const body = await api("/api/disputes", {
+          method: "POST",
+          body: JSON.stringify({
+            contract_id: document.querySelector("#dispute-contract").value,
+            claimant: document.querySelector("#claimant").value,
+            statement: document.querySelector("#statement").value
+          })
+        });
+        result.classList.remove("hidden");
+        result.textContent = JSON.stringify(body.dispute.resolution, null, 2);
+      } catch (err) {
+        result.classList.remove("hidden");
+        result.textContent = err.message;
+      }
+    });
+
+    if (state.token) {
+      showApp();
+      refresh().catch(() => showLogin());
+    }
+  </script>
+</body>
+</html>

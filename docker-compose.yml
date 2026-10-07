@@ -1,0 +1,24 @@
+services:
+  iot-operator:
+    build: .
+    image: iot-operator:local
+    container_name: iot-operator
+    ports:
+      - "8080:80"
+      - "8090:8090"
+    environment:
+      DATA_DIR: /data
+      JWT_SECRET: ${JWT_SECRET:-}
+      AES_KEY: ${AES_KEY:-}
+      BEDROCK_MODE: ${BEDROCK_MODE:-auto}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      BEDROCK_MODEL_ID: ${BEDROCK_MODEL_ID:-amazon.nova-lite-v1:0}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+    volumes:
+      - iot-data:/data
+    restart: unless-stopped
+
+volumes:
+  iot-data:
